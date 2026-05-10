@@ -851,7 +851,7 @@ namespace Oxide.Plugins
                         return;
                     }
 
-                    if (Dist(Npc, _target) > 2.5f) MoveTo(_target.transform.position, 6f);
+                    if (Dist(Npc, _target) > 2.5f) MoveTo(_target.transform.position, BaseNavigator.NavigationSpeed.Fast);
                     else                            { StopMoving(); Attack(_target); }
                 }
                 else

@@ -1078,21 +1078,24 @@ namespace Oxide.Plugins
             private void MoveTo(Vector3 pos, BaseNavigator.NavigationSpeed speed)
             {
                 if (Npc == null) return;
+                pos = GroundPos(pos);
 
                 if (_navigator != null)
                 {
                     _navigator.SetDestination(pos, speed);
                     _navigator.Resume();
+                    // Não rotacionar manualmente — o navigator cuida disso internamente
+                    // Fazer isso junto causa o movimento de lado
                 }
                 else
                 {
-                    // Fallback se o navigator não estiver disponível
+                    // Fallback: movimento direto com snap de terreno
                     Vector3 next = Vector3.MoveTowards(Npc.transform.position, pos, 2.5f);
+                    next = GroundPos(next);
                     Npc.transform.position = next;
                     Npc.SendNetworkUpdate();
+                    RotateTo(pos);
                 }
-
-                RotateTo(pos);
             }
 
             private void StopMoving() => _navigator?.Pause();
@@ -1101,7 +1104,9 @@ namespace Oxide.Plugins
             {
                 if (Npc == null || _owner == null) return;
                 StopMoving();
-                Npc.transform.position = _owner.transform.position + _owner.transform.forward * 2f + Vector3.up * 0.1f;
+                Vector3 pos = _owner.transform.position + _owner.transform.forward * 2f;
+                pos = GroundPos(pos);
+                Npc.transform.position = pos;
                 Npc.SendNetworkUpdate();
             }
 
@@ -1110,8 +1115,23 @@ namespace Oxide.Plugins
                 if (Npc == null) return;
                 Vector3 dir = (pos - Npc.transform.position).normalized;
                 dir.y = 0f;
-                if (dir != Vector3.zero)
-                    Npc.transform.rotation = Quaternion.LookRotation(dir);
+                if (dir == Vector3.zero) return;
+
+                // ServerRotation é o que o Rust sincroniza na rede — evita o "slide de lado"
+                Npc.ServerRotation = Quaternion.LookRotation(dir);
+            }
+
+            // Snap ao terreno via raycast — evita o NPC afundar no chão
+            private Vector3 GroundPos(Vector3 pos)
+            {
+                RaycastHit hit;
+                if (Physics.Raycast(pos + Vector3.up * 50f, Vector3.down, out hit, 100f,
+                    LayerMask.GetMask("Terrain", "World", "Construction")))
+                    return hit.point + Vector3.up * 0.05f;
+
+                // Fallback via heightmap se o raycast não achar nada
+                pos.y = TerrainMeta.HeightMap.GetHeight(pos);
+                return pos;
             }
 
             // ── UI Loop ────────────────────────────────────────────────────────

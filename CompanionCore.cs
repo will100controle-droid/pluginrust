@@ -715,7 +715,8 @@ namespace Oxide.Plugins
             private BasePlayer    _owner;
             private CompanionCore _plugin;
             private PluginConfig  _cfg;
-            private NavMeshAgent  _agent;
+            private BaseNavigator _navigator;
+            private NavMeshAgent  _agent;         // fallback se BaseNavigator não existir
 
             public BotMode CurrentMode      { get; private set; }
             private BotMode _modeBeforeCombat;
@@ -728,6 +729,7 @@ namespace Oxide.Plugins
 
             private BaseEntity _farmTarget;
             private Vector3    _wanderTarget;
+            private Vector3    _lastNavTarget;   // evita resetar o path a cada tick
 
             public void Initialize(NPCPlayer npc, BasePlayer owner, CompanionCore plugin, PluginConfig cfg, bool lootEnabled, string lastMode)
             {
@@ -737,18 +739,24 @@ namespace Oxide.Plugins
                 _cfg    = cfg;
                 LootEnabled = lootEnabled;
 
-                // NavMeshAgent direto — brain desabilitado, controlamos tudo
-                _agent = npc.GetComponent<NavMeshAgent>();
-                if (_agent != null)
+                // BaseNavigator direto do NPC (separado do brain — funciona com brain desabilitado)
+                _navigator = npc.GetComponent<BaseNavigator>();
+
+                // Fallback: NavMeshAgent nativo do Unity caso BaseNavigator não exista
+                if (_navigator == null)
                 {
-                    _agent.enabled        = true;
-                    _agent.Warp(npc.transform.position); // Coloca o agente no NavMesh
-                    _agent.speed          = 5f;
-                    _agent.angularSpeed   = 0f;   // Rotação manual via ServerRotation
-                    _agent.acceleration   = 12f;
-                    _agent.stoppingDistance = 0.5f;
-                    _agent.autoRepath     = true;
-                    _agent.autoBraking    = true;
+                    _agent = npc.GetComponent<NavMeshAgent>();
+                    if (_agent != null)
+                    {
+                        _agent.enabled          = true;
+                        _agent.Warp(npc.transform.position);
+                        _agent.speed            = 5f;
+                        _agent.angularSpeed     = 0f;
+                        _agent.acceleration     = 12f;
+                        _agent.stoppingDistance = 0.5f;
+                        _agent.autoRepath       = true;
+                        _agent.autoBraking      = true;
+                    }
                 }
 
                 SetMode(lastMode);
@@ -806,9 +814,30 @@ namespace Oxide.Plugins
             {
                 float dist = Dist(Npc, _owner);
 
-                if (dist > 60f)                      TeleportToOwner();
-                else if (dist > _cfg.followDistance) MoveTo(_owner.transform.position, 6f);
-                else                                 { StopMoving(); RotateTo(_owner.transform.position); }
+                if (dist > 60f)
+                {
+                    TeleportToOwner();
+                    return;
+                }
+
+                if (dist > _cfg.followDistance)
+                {
+                    // Destino: logo atrás do player, não em cima dele
+                    Vector3 target = _owner.transform.position - _owner.transform.forward * 1.5f;
+                    target = GroundPos(target);
+
+                    // Só atualiza o path se o destino mudou mais de 1m — evita reset constante
+                    if (Vector3.Distance(target, _lastNavTarget) > 1f)
+                    {
+                        _lastNavTarget = target;
+                        MoveTo(target, 6f);
+                    }
+                }
+                else
+                {
+                    StopMoving();
+                    RotateTo(_owner.transform.position);
+                }
             }
 
             private void ThinkStay()
@@ -1108,16 +1137,25 @@ namespace Oxide.Plugins
                 if (Npc == null) return;
                 pos = GroundPos(pos);
 
-                if (_agent != null && _agent.isOnNavMesh)
+                if (_navigator != null)
                 {
-                    _agent.speed    = speed;
+                    // BaseNavigator: sistema nativo do Rust — animações, pathfinding e rotação corretos
+                    BaseNavigator.NavigationSpeed navSpeed =
+                        speed >= 5f ? BaseNavigator.NavigationSpeed.Fast :
+                        speed >= 3f ? BaseNavigator.NavigationSpeed.Normal :
+                                      BaseNavigator.NavigationSpeed.Slow;
+                    _navigator.SetDestination(pos, navSpeed);
+                    _navigator.Resume();
+                }
+                else if (_agent != null && _agent.isOnNavMesh)
+                {
+                    _agent.speed     = speed;
                     _agent.isStopped = false;
                     _agent.SetDestination(pos);
-                    // Rotação via UpdateRotationFromVelocity no Think — sem conflito
                 }
                 else
                 {
-                    // Fallback: movimento direto com snap de terreno
+                    // Fallback direto (sem NavMesh disponível)
                     Vector3 next = Vector3.MoveTowards(Npc.transform.position, pos, speed * 0.25f);
                     next = GroundPos(next);
                     Npc.transform.position = next;
@@ -1128,6 +1166,7 @@ namespace Oxide.Plugins
 
             private void StopMoving()
             {
+                _navigator?.Pause();
                 if (_agent != null && _agent.isOnNavMesh)
                     _agent.isStopped = true;
             }
@@ -1135,11 +1174,14 @@ namespace Oxide.Plugins
             private void TeleportToOwner()
             {
                 if (Npc == null || _owner == null) return;
+                StopMoving();
+                _lastNavTarget = Vector3.zero;
+
                 Vector3 pos = _owner.transform.position + _owner.transform.forward * 2f;
                 pos = GroundPos(pos);
 
                 if (_agent != null)
-                    _agent.Warp(pos);    // Warp reposiciona corretamente no NavMesh
+                    _agent.Warp(pos);
                 else
                 {
                     Npc.transform.position = pos;
@@ -1183,8 +1225,8 @@ namespace Oxide.Plugins
 
             private void OnDestroy()
             {
-                if (_agent != null && _agent.isOnNavMesh)
-                    _agent.isStopped = true;
+                try { _navigator?.Pause(); } catch { }
+                try { if (_agent != null && _agent.isOnNavMesh) _agent.isStopped = true; } catch { }
                 CancelInvoke();
             }
         }

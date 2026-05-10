@@ -659,6 +659,35 @@ namespace Oxide.Plugins
 
         #endregion
 
+        #region Auto-Update
+
+        private const string UPDATE_URL = "https://raw.githubusercontent.com/will100controle-droid/pluginrust/main/CompanionCore.cs";
+
+        [ConsoleCommand("companion.update")]
+        private void CmdSelfUpdate(ConsoleSystem.Arg arg)
+        {
+            // Apenas console do servidor — não permite jogadores
+            if (arg.Player() != null) return;
+
+            Puts("CompanionCore: verificando atualização...");
+
+            webrequest.Enqueue(UPDATE_URL, null, (code, body) =>
+            {
+                if (code != 200 || string.IsNullOrEmpty(body))
+                {
+                    Puts($"CompanionCore: falha ao baixar atualização (HTTP {code}).");
+                    return;
+                }
+
+                string path = System.IO.Path.Combine(Interface.Oxide.PluginDirectory, "CompanionCore.cs");
+                System.IO.File.WriteAllText(path, body);
+                Puts("CompanionCore: arquivo atualizado. Recarregando...");
+                Server.Command("oxide.reload CompanionCore");
+            }, this);
+        }
+
+        #endregion
+
         #region Métodos Auxiliares
 
         public void SendMessage(BasePlayer player, string message)

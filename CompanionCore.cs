@@ -6,7 +6,6 @@ using Oxide.Core.Libraries.Covalence;
 using Oxide.Core.Plugins;
 using Oxide.Game.Rust.Cui;
 using UnityEngine;
-using UnityEngine.AI;
 
 namespace Oxide.Plugins
 {
@@ -383,10 +382,6 @@ namespace Oxide.Plugins
             var frankenstein = npc.GetComponent<FrankensteinPet>();
             frankenstein?.ApplyPetStatModifiers();
 
-            // Desabilita o brain para evitar que ele brigue com nosso controle de movimento
-            var brain = npc.GetComponent<BaseAIBrain>();
-            if (brain != null) brain.enabled = false;
-
             GiveStartKit(npc);
 
             // Controller fica no owner — mais robusto, sobrevive se o NPC for destruído pelo engine
@@ -711,14 +706,13 @@ namespace Oxide.Plugins
         {
             public enum BotMode { Follow, Stay, Farmer, Combat }
 
-            public  NPCPlayer     Npc          { get; private set; }
+            public  NPCPlayer     Npc           { get; private set; }
             private BasePlayer    _owner;
             private CompanionCore _plugin;
             private PluginConfig  _cfg;
             private BaseNavigator _navigator;
-            private NavMeshAgent  _agent;         // fallback se BaseNavigator não existir
 
-            public BotMode CurrentMode      { get; private set; }
+            public BotMode CurrentMode       { get; private set; }
             private BotMode _modeBeforeCombat;
 
             public bool LootEnabled { get; set; } = true;
@@ -729,43 +723,28 @@ namespace Oxide.Plugins
 
             private BaseEntity _farmTarget;
             private Vector3    _wanderTarget;
-            private Vector3    _lastNavTarget;   // evita resetar o path a cada tick
 
             public void Initialize(NPCPlayer npc, BasePlayer owner, CompanionCore plugin, PluginConfig cfg, bool lootEnabled, string lastMode)
             {
-                Npc     = npc;
-                _owner  = owner;
-                _plugin = plugin;
-                _cfg    = cfg;
+                Npc         = npc;
+                _owner      = owner;
+                _plugin     = plugin;
+                _cfg        = cfg;
                 LootEnabled = lootEnabled;
 
-                // BaseNavigator direto do NPC (separado do brain — funciona com brain desabilitado)
-                _navigator = npc.GetComponent<BaseNavigator>();
-
-                // Fallback: NavMeshAgent nativo do Unity caso BaseNavigator não exista
-                if (_navigator == null)
-                {
-                    _agent = npc.GetComponent<NavMeshAgent>();
-                    if (_agent != null)
-                    {
-                        _agent.enabled          = true;
-                        _agent.Warp(npc.transform.position);
-                        _agent.speed            = 5f;
-                        _agent.angularSpeed     = 0f;
-                        _agent.acceleration     = 12f;
-                        _agent.stoppingDistance = 0.5f;
-                        _agent.autoRepath       = true;
-                        _agent.autoBraking      = true;
-                    }
-                }
+                // Brain fica LIGADO — ele cuida das animações e sync de rede
+                // Pegamos o navigator através do brain para controlar o destino
+                var frankenstein = npc.GetComponent<FrankensteinPet>();
+                if (frankenstein?.Brain != null)
+                    _navigator = frankenstein.Brain.Navigator;
 
                 SetMode(lastMode);
 
-                InvokeRepeating("Think",         0.25f, 0.25f);
-                InvokeRepeating("CheckCombat",   0.5f,  0.5f);
-                InvokeRepeating("CheckHeal",     5f,    5f);
-                InvokeRepeating("CheckLoot",     2f,    2f);
-                InvokeRepeating("RefreshUILoop", 1f,    1f);
+                InvokeRepeating("Think",         0.5f, 0.5f);
+                InvokeRepeating("CheckCombat",   1f,   1f);
+                InvokeRepeating("CheckHeal",     5f,   5f);
+                InvokeRepeating("CheckLoot",     2f,   2f);
+                InvokeRepeating("RefreshUILoop", 1f,   1f);
             }
 
             public void SetMode(string modeStr)
@@ -789,10 +768,6 @@ namespace Oxide.Plugins
                 if (Npc == null || Npc.IsDestroyed || _owner == null) return;
                 if (_inCombat) return;
 
-                // Rotação suave baseada na velocidade real do NavMeshAgent
-                // Garante que o NPC sempre olhe pra onde está andando — sem movimento de lado
-                UpdateRotationFromVelocity();
-
                 switch (CurrentMode)
                 {
                     case BotMode.Follow: ThinkFollow(); break;
@@ -801,43 +776,16 @@ namespace Oxide.Plugins
                 }
             }
 
-            private void UpdateRotationFromVelocity()
-            {
-                if (_agent == null || Npc == null) return;
-                Vector3 vel = _agent.velocity;
-                vel.y = 0f;
-                if (vel.magnitude > 0.3f)
-                    Npc.ServerRotation = Quaternion.LookRotation(vel.normalized);
-            }
-
             private void ThinkFollow()
             {
                 float dist = Dist(Npc, _owner);
 
                 if (dist > 60f)
-                {
                     TeleportToOwner();
-                    return;
-                }
-
-                if (dist > _cfg.followDistance)
-                {
-                    // Destino: logo atrás do player, não em cima dele
-                    Vector3 target = _owner.transform.position - _owner.transform.forward * 1.5f;
-                    target = GroundPos(target);
-
-                    // Só atualiza o path se o destino mudou mais de 1m — evita reset constante
-                    if (Vector3.Distance(target, _lastNavTarget) > 1f)
-                    {
-                        _lastNavTarget = target;
-                        MoveTo(target, 6f);
-                    }
-                }
+                else if (dist > _cfg.followDistance)
+                    MoveTo(_owner.transform.position, BaseNavigator.NavigationSpeed.Fast);
                 else
-                {
                     StopMoving();
-                    RotateTo(_owner.transform.position);
-                }
             }
 
             private void ThinkStay()
@@ -853,7 +801,7 @@ namespace Oxide.Plugins
                 if (distToOwner > _cfg.farmerReturnDistance)
                 {
                     if (distToOwner > 60f) TeleportToOwner();
-                    else                   MoveTo(_owner.transform.position, 6f);
+                    else                   MoveTo(_owner.transform.position, BaseNavigator.NavigationSpeed.Fast);
                     return;
                 }
 
@@ -873,7 +821,7 @@ namespace Oxide.Plugins
                     }
                     else
                     {
-                        MoveTo(_farmTarget.transform.position, 4f);
+                        MoveTo(_farmTarget.transform.position, BaseNavigator.NavigationSpeed.Normal);
                     }
                 }
                 else
@@ -883,7 +831,7 @@ namespace Oxide.Plugins
                         Vector3 rand  = UnityEngine.Random.insideUnitSphere * _cfg.farmerRadius;
                         _wanderTarget = _owner.transform.position + new Vector3(rand.x, 0f, rand.z);
                     }
-                    MoveTo(_wanderTarget, 2.5f);
+                    MoveTo(_wanderTarget, BaseNavigator.NavigationSpeed.Slow);
                 }
             }
 
@@ -1132,61 +1080,22 @@ namespace Oxide.Plugins
 
             // ── Movimentação ───────────────────────────────────────────────────
 
-            private void MoveTo(Vector3 pos, float speed)
+            private void MoveTo(Vector3 pos, BaseNavigator.NavigationSpeed speed)
             {
-                if (Npc == null) return;
-                pos = GroundPos(pos);
-
-                if (_navigator != null)
-                {
-                    // BaseNavigator: sistema nativo do Rust — animações, pathfinding e rotação corretos
-                    BaseNavigator.NavigationSpeed navSpeed =
-                        speed >= 5f ? BaseNavigator.NavigationSpeed.Fast :
-                        speed >= 3f ? BaseNavigator.NavigationSpeed.Normal :
-                                      BaseNavigator.NavigationSpeed.Slow;
-                    _navigator.SetDestination(pos, navSpeed);
-                    _navigator.Resume();
-                }
-                else if (_agent != null && _agent.isOnNavMesh)
-                {
-                    _agent.speed     = speed;
-                    _agent.isStopped = false;
-                    _agent.SetDestination(pos);
-                }
-                else
-                {
-                    // Fallback direto (sem NavMesh disponível)
-                    Vector3 next = Vector3.MoveTowards(Npc.transform.position, pos, speed * 0.25f);
-                    next = GroundPos(next);
-                    Npc.transform.position = next;
-                    Npc.SendNetworkUpdateImmediate();
-                    RotateTo(pos);
-                }
+                if (Npc == null || _navigator == null) return;
+                _navigator.SetDestination(GroundPos(pos), speed);
+                _navigator.Resume();
             }
 
-            private void StopMoving()
-            {
-                _navigator?.Pause();
-                if (_agent != null && _agent.isOnNavMesh)
-                    _agent.isStopped = true;
-            }
+            private void StopMoving() => _navigator?.Pause();
 
             private void TeleportToOwner()
             {
                 if (Npc == null || _owner == null) return;
                 StopMoving();
-                _lastNavTarget = Vector3.zero;
-
-                Vector3 pos = _owner.transform.position + _owner.transform.forward * 2f;
-                pos = GroundPos(pos);
-
-                if (_agent != null)
-                    _agent.Warp(pos);
-                else
-                {
-                    Npc.transform.position = pos;
-                    Npc.SendNetworkUpdateImmediate();
-                }
+                Vector3 pos = GroundPos(_owner.transform.position + _owner.transform.forward * 2f);
+                Npc.transform.position = pos;
+                Npc.SendNetworkUpdate();
             }
 
             private void RotateTo(Vector3 pos)
@@ -1226,7 +1135,6 @@ namespace Oxide.Plugins
             private void OnDestroy()
             {
                 try { _navigator?.Pause(); } catch { }
-                try { if (_agent != null && _agent.isOnNavMesh) _agent.isStopped = true; } catch { }
                 CancelInvoke();
             }
         }

@@ -1183,7 +1183,8 @@ namespace Oxide.Plugins
 
             private void OnDestroy()
             {
-                if (_agent != null) _agent.isStopped = true;
+                if (_agent != null && _agent.isOnNavMesh)
+                    _agent.isStopped = true;
                 CancelInvoke();
             }
         }
